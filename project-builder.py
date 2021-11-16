@@ -1,7 +1,5 @@
 from qgis.core import QgsProject, QgsApplication, QgsCoordinateReferenceSystem, \
     QgsDataSourceUri, QgsVectorLayer, QgsProviderRegistry
-from projection import make_crs_wkt_from_epsg
-from PyQt5.QtCore import QFileInfo
 
 
 if __name__ == '__main__':
