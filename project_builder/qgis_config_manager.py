@@ -1,4 +1,5 @@
 import sys
+import os
 import yaml
 import re
 from pathlib import Path
@@ -6,7 +7,7 @@ from contextlib import contextmanager
 from typing import Dict, Union, Any
 from collections import Counter
 from qgis.core import QgsLayerTreeLayer, QgsLayerTreeGroup, QgsProject, QgsApplication, QgsVectorLayer, \
-    QgsRasterLayer
+    QgsRasterLayer, QgsCoordinateReferenceSystem
 
 
 @contextmanager
@@ -62,6 +63,7 @@ def create_dict_from_project_tree(qgsproject) -> dict:
                     'NAME': layer.name(),
                     'PROVIDER': layer.dataProvider().name(),
                     'ISVISIBLE': child.isVisible(),
+                    'CRS': layer.crs().authid(),
                 }
             elif isinstance(child, QgsLayerTreeGroup):          # If child is a group, enters a deeper level in the dict
                 layer_tree[child.name()] = recursive(child)     # Child becomes a parent and repeat
@@ -87,27 +89,46 @@ def extract_vector_layer_connection_info(qgs_vector_layer) -> dict:
 
 
 def create_project_tree_from_dict(tree_dict, qgsproject):
+    """
+    Create a QGIS tree in a project from a dictionary of a tree.
+    :param tree_dict: a dictionary container the layer tree including groups, sources, visibility
+    :param qgsproject: the qgis within which the tree will be created
+    """
+    if type(qgsproject) != QgsProject:
+        raise TypeError('Input must be a QgsProject.')
+
     root = qgsproject.layerTreeRoot()
 
-    # Recursive function that saves each tree element into a dictionary.
+    # Recursive function that saves each dict element into a tree group or layer.
     def walk(node, tree):
         for key, item in node.items():
-            if isinstance(item, dict):
-                if Counter(item.keys()) == Counter(['URI', 'PROVIDER', 'NAME', 'ISVISIBLE']):
-                    if item['PROVIDER'] in ['postgres', 'ogr']:
+            if isinstance(item, dict):                                                         # if node is a dict
+                if Counter(item.keys()) == Counter(['URI', 'PROVIDER', 'NAME', 'ISVISIBLE', 'CRS']):  # if keys list is
+                    if item['PROVIDER'] in ['postgres', 'ogr']:                                # if vector data
                         vlayer = QgsVectorLayer(item['URI'], item['NAME'], item['PROVIDER'])
-                    if item['PROVIDER'] == 'wms':
+                    if item['PROVIDER'] == 'wms':                                              # if wms
                         vlayer = QgsRasterLayer(item['URI'], item['NAME'], item['PROVIDER'])
-                    qgsproject.addMapLayer(vlayer, False)
-                    tree.addLayer(vlayer)
-                    tree.findLayer(vlayer).setItemVisibilityChecked(item['ISVISIBLE'])
-                else:
-                    tree.addGroup(key)
-                    walk(item, tree.findGroup(key))
-            else:
-                tree.addGroup(key)
-                tree.addGroup(item)
-    return walk(tree_dict, root)
+                    vlayer.setCrs(QgsCoordinateReferenceSystem(item['CRS']))                   # assign layer crs
+                    qgsproject.addMapLayer(vlayer, False)                                      # add layer to the proj
+                    tree.addLayer(vlayer)                                                      # add layer to the tree
+                    tree.findLayer(vlayer).setItemVisibilityChecked(item['ISVISIBLE'])         # set visibility
+                else:                                   # if dict but not layer
+                    tree.addGroup(key)                  # add the group to the tree
+                    walk(item, tree.findGroup(key))     # recurse
+            else:                       # if not dict
+                tree.addGroup(key)      # add the key group
+                tree.addGroup(item)     # and the item group (assuming a deep string item is an empty group)
+    walk(tree_dict, root)
+
+
+def save_project_layers_style(qgsproject) -> None:
+    if type(qgsproject) != QgsProject:
+        raise TypeError('Input must be a QgsProject.')
+
+    root = qgsproject.layerTreeRoot()
+
+    for layer in qgsproject.mapLayers().values():
+        layer.saveNamedStyle(os.path.join('/home/julien/Documents/qgis-project-builder/DATA/symbology', layer.name()+'.qml'))
 
 
 if __name__ == '__main__':
@@ -115,6 +136,5 @@ if __name__ == '__main__':
         raise IndexError('One argument is required.')
     with open_project(sys.argv[1]) as qgs_project:
         dict_tree = create_dict_from_project_tree(qgs_project)
-        create_project_tree_from_dict(dict_tree)
         with open('data.yml', 'w') as outfile:
             yaml.dump(dict_tree, outfile, allow_unicode=True)
