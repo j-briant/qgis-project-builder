@@ -4,7 +4,9 @@ import re
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Dict, Union, Any
-from qgis.core import QgsLayerTree, QgsLayerTreeLayer, QgsLayerTreeGroup, QgsProject, QgsApplication
+from collections import Counter
+from qgis.core import QgsLayerTreeLayer, QgsLayerTreeGroup, QgsProject, QgsApplication, QgsVectorLayer, \
+    QgsRasterLayer
 
 
 @contextmanager
@@ -59,6 +61,7 @@ def create_dict_from_project_tree(qgsproject) -> dict:
                     'URI': layer.dataProvider().dataSourceUri(),
                     'NAME': layer.name(),
                     'PROVIDER': layer.dataProvider().name(),
+                    'ISVISIBLE': child.isVisible(),
                 }
             elif isinstance(child, QgsLayerTreeGroup):          # If child is a group, enters a deeper level in the dict
                 layer_tree[child.name()] = recursive(child)     # Child becomes a parent and repeat
@@ -82,16 +85,29 @@ def extract_vector_layer_connection_info(qgs_vector_layer) -> dict:
     connection_info['geometry_column'] = geometry_col                                   # Add the geometry column pair
     return connection_info
 
-    def create_project_tree_from_dict(tree_dict) -> QgsLayerTree:
-        root = QgsProject.instance().layerTreeRoot()
 
-        # Recursive function that saves each tree element into a dictionary.
-        def walk(node):
-            for key, item in node.items():
-                if 'URI' not in item.keys():
-                    root.addGroup(key)
-                    walk(item)
-            pass
+def create_project_tree_from_dict(tree_dict, qgsproject):
+    root = qgsproject.layerTreeRoot()
+
+    # Recursive function that saves each tree element into a dictionary.
+    def walk(node, tree):
+        for key, item in node.items():
+            if isinstance(item, dict):
+                if Counter(item.keys()) == Counter(['URI', 'PROVIDER', 'NAME', 'ISVISIBLE']):
+                    if item['PROVIDER'] in ['postgres', 'ogr']:
+                        vlayer = QgsVectorLayer(item['URI'], item['NAME'], item['PROVIDER'])
+                    if item['PROVIDER'] == 'wms':
+                        vlayer = QgsRasterLayer(item['URI'], item['NAME'], item['PROVIDER'])
+                    qgsproject.addMapLayer(vlayer, False)
+                    tree.addLayer(vlayer)
+                    tree.findLayer(vlayer).setItemVisibilityChecked(item['ISVISIBLE'])
+                else:
+                    tree.addGroup(key)
+                    walk(item, tree.findGroup(key))
+            else:
+                tree.addGroup(key)
+                tree.addGroup(item)
+    return walk(tree_dict, root)
 
 
 if __name__ == '__main__':
@@ -99,5 +115,6 @@ if __name__ == '__main__':
         raise IndexError('One argument is required.')
     with open_project(sys.argv[1]) as qgs_project:
         dict_tree = create_dict_from_project_tree(qgs_project)
+        create_project_tree_from_dict(dict_tree)
         with open('data.yml', 'w') as outfile:
             yaml.dump(dict_tree, outfile, allow_unicode=True)
